@@ -1,65 +1,40 @@
-import React, { useState, createRef } from 'react';
-import { BrowserRouter as Router } from 'react-router-dom';
-import { Container, Dimmer, Loader, Grid, Message } from 'semantic-ui-react';
-import 'semantic-ui-css/semantic.min.css';
+import React, { useState } from 'react';
 
-import { SubstrateContextProvider, useSubstrate } from './substrate-lib';
-import { DeveloperConsole } from './substrate-lib/components';
+const Loaded = ({ wasm }) => <button onClick={() => console.log(wasm)}>Click me</button>;
 
-import Navbar from './Navbar';
-import Routes from './Routes';
+const Unloaded = ({ loading, loadWasm }) => {
+  return loading ? (
+    <div>Loading...</div>
+  ) : (
+    <button onClick={loadWasm}>Load library</button>
+  );
+};
 
-function Main () {
-  const [accountAddress, setAccountAddress] = useState(null);
-  const { apiState, keyring, keyringState, apiError } = useSubstrate();
-  const accountPair =
-    accountAddress &&
-    keyringState === 'READY' &&
-    keyring.getPair(accountAddress);
+const App = () => {
+  const [loading, setLoading] = useState(false);
+  const [wasm, setWasm] = useState(null);
 
-  const loader = text =>
-    <Dimmer active>
-      <Loader size='small'>{text}</Loader>
-    </Dimmer>;
-
-  const message = err =>
-    <Grid centered columns={2} padded>
-      <Grid.Column>
-        <Message negative compact floating
-          header='Error Connecting to Substrate'
-          content={`${JSON.stringify(err, null, 4)}`}
-        />
-      </Grid.Column>
-    </Grid>;
-
-  if (apiState === 'ERROR') return message(apiError);
-  else if (apiState !== 'READY') return loader('Connecting to Substrate');
-
-  if (keyringState !== 'READY') {
-    return loader('Loading accounts (please review any extension\'s authorization)');
-  }
-
-  const contextRef = createRef();
+  const loadWasm = async () => {
+    try {
+      setLoading(true);
+      const wasm = await import('fibonacci');
+      setWasm(wasm);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
-    <div ref={contextRef}>
-        <Router>
-            <Navbar setAccountAddress={setAccountAddress} />
-            <Container style={{ paddingTop: '3em' }}>
-            <Grid centered>
-            <Routes accountPair={accountPair} />
-            </Grid>
-            </Container>
-            <DeveloperConsole />
-        </Router>
+    <div className="App">
+      <header className="App-header">
+        {wasm ? (
+          <Loaded wasm={wasm} />
+        ) : (
+          <Unloaded loading={loading} loadWasm={loadWasm} />
+        )}
+      </header>
     </div>
   );
-}
+};
 
-export default function App () {
-  return (
-    <SubstrateContextProvider>
-      <Main />
-    </SubstrateContextProvider>
-  );
-}
+export default App;
