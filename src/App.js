@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 
-const Loaded = ({ wasm }) => <button onClick={() => console.log(wasm)}>Click me</button>;
+const Loaded = ({ wasm }) => <button onClick={() => console.log(wasm.fibanocci(3))}>Click me</button>;
 
 const Unloaded = ({ loading, loadWasm }) => {
   return loading ? (
