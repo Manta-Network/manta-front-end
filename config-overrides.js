@@ -1,17 +1,5 @@
 const path = require('path');
 
-
-function excludeExtension(config, extension) {
-  const index1 = config.module.rules.findIndex((rule) => typeof (rule.oneOf) !== 'undefined');
-  config.module.rules[index1].oneOf = config.module.rules[index1].oneOf.filter((rule) => !rule.test || rule.test.toString().indexOf(extension) === -1);
-
-  const index2 = config.module.rules[index1].oneOf.findIndex((rule) => rule.loader && typeof rule.loader === 'string' && rule.loader.indexOf(`${path.sep}file-loader${path.sep}`) !== -1);
-  config.module.rules[index1].oneOf[index2].exclude.push(extension);
-
-  return config;
-}
-
-
 module.exports = function override(config, env) {
 
   config.module.rules.push({
