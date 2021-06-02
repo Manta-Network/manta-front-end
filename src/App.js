@@ -1,65 +1,68 @@
-import React, { useState, createRef } from 'react';
-import { BrowserRouter as Router } from 'react-router-dom';
-import { Container, Dimmer, Loader, Grid, Message } from 'semantic-ui-react';
-import 'semantic-ui-css/semantic.min.css';
+import React, { useState } from 'react';
+import { receiver1, receiver2 } from './wasm_constants';
 
-import { SubstrateContextProvider, useSubstrate } from './substrate-lib';
-import { DeveloperConsole } from './substrate-lib/components';
+const zkp = async wasm => {
+  const request = new XMLHttpRequest();
+  request.open('GET', 'transfer_pk.bin', true);
+  request.responseType = 'blob';
+  request.onreadystatechange = async () => {
+    if (request.readyState === 4) {
+      const fileContent = request.response;
+      const fileContentBuffer = await fileContent.arrayBuffer();
+      const provingKey = new Uint8Array(fileContentBuffer);
+      wasm.init_panic_hook();
+      const start = performance.now();
+      console.log(wasm.js_zkp(provingKey, receiver1, receiver2));
+      const end = performance.now();
+      console.log(`Call to js_zkp took ${start - end} milliseconds.`);
+      console.log('js zkp finished');
+    }
+  };
+  request.send(null);
+};
 
-import Navbar from './Navbar';
-import Routes from './Routes';
+const Loaded = ({ wasm }) => {
+  const fn = () => {
+    zkp(wasm);
+  };
+  return (
+    <button onClick={fn}>Click me</button>
+  );
+};
 
-function Main () {
-  const [accountAddress, setAccountAddress] = useState(null);
-  const { apiState, keyring, keyringState, apiError } = useSubstrate();
-  const accountPair =
-    accountAddress &&
-    keyringState === 'READY' &&
-    keyring.getPair(accountAddress);
+const Unloaded = ({ loading, loadWasm }) => {
+  return loading ? (
+    <div>Loading...</div>
+  ) : (
+    <button onClick={loadWasm}>Load library</button>
+  );
+};
 
-  const loader = text =>
-    <Dimmer active>
-      <Loader size='small'>{text}</Loader>
-    </Dimmer>;
+const App = () => {
+  const [loading, setLoading] = useState(false);
+  const [wasm, setWasm] = useState(null);
 
-  const message = err =>
-    <Grid centered columns={2} padded>
-      <Grid.Column>
-        <Message negative compact floating
-          header='Error Connecting to Substrate'
-          content={`${JSON.stringify(err, null, 4)}`}
-        />
-      </Grid.Column>
-    </Grid>;
-
-  if (apiState === 'ERROR') return message(apiError);
-  else if (apiState !== 'READY') return loader('Connecting to Substrate');
-
-  if (keyringState !== 'READY') {
-    return loader('Loading accounts (please review any extension\'s authorization)');
-  }
-
-  const contextRef = createRef();
+  const loadWasm = async () => {
+    try {
+      setLoading(true);
+      const wasm = await import('pallet-manta-pay');
+      setWasm(wasm);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
-    <div ref={contextRef}>
-        <Router>
-            <Navbar setAccountAddress={setAccountAddress} />
-            <Container style={{ paddingTop: '3em' }}>
-            <Grid centered>
-            <Routes accountPair={accountPair} />
-            </Grid>
-            </Container>
-            <DeveloperConsole />
-        </Router>
+    <div className='App'>
+      <header className='App-header'>
+        {wasm ? (
+          <Loaded wasm={wasm} />
+        ) : (
+          <Unloaded loading={loading} loadWasm={loadWasm} />
+        )}
+      </header>
     </div>
   );
-}
+};
 
-export default function App () {
-  return (
-    <SubstrateContextProvider>
-      <Main />
-    </SubstrateContextProvider>
-  );
-}
+export default App;
