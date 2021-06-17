@@ -1,79 +1,83 @@
-import React, { useState, useRef } from 'react';
-import { Form, Grid, Header, Message, Label } from 'semantic-ui-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Form, Grid, Header, Input } from 'semantic-ui-react';
 import { TxButton } from './substrate-lib/components';
-import { base64Decode, base64Validate, base64Encode } from '@polkadot/util-crypto';
-import { formatBase64StringForDisplay } from './utils/FormatBase64StringForDisplay';
-import BN from 'bn.js';
+import { useSubstrate } from './substrate-lib';
+import MantaAsset from './dtos/MantaAsset';
+import { base64Decode } from '@polkadot/util-crypto';
+import { loadSpendableAssets, loadSpendableAssetsById, persistSpendableAssets } from './utils/Persistence';
+import _ from 'lodash';
 
-export default function Main ({ accountPair }) {
-  const EXPECTED_PAYLOAD_SIZE_IN_BYTES = 512;
-
-  const [reclaimInfo, setReclaimInfo] = useState(null);
-  const [assetID, setAssetID] = useState(null);
-  const [reclaimAmount, setReclaimAmount] = useState(null);
-  const [sender1, setSender1] = useState(null);
-  const [sender2, setSender2] = useState(null);
-  const [receiver, setReceiver] = useState(null);
-  const [proof, setProof] = useState(null);
-
+export default function Main ({ accountPair, wasm }) {
+  const { api } = useSubstrate();
   const [status, setStatus] = useState(null);
-  const [uploadErrorText, setUploadErrorText] = useState('');
-  const fileUploadRef = useRef();
+  const [reclaimPK, setReclaimPK] = useState(null);
+  const [formState, setFormState] = useState({ assetId: 0, address: '', amount: 1 });
+  const onChange = (_, data) =>
+    setFormState(prev => ({ ...prev, [data.state]: data.value }));
+  const { assetId, address, amount } = formState;
 
-  const displayReclaimInfo = reclaimInfoBytes => {
-    setAssetID(new BN(reclaimInfoBytes.slice(0, 8), 10, 'le'));
-    setReclaimAmount(new BN(reclaimInfoBytes.slice(8, 16), 10, 'le'));
-    setSender1(base64Encode(reclaimInfoBytes.slice(16, 112)));
-    setSender2(base64Encode(reclaimInfoBytes.slice(112, 208)));
-    setReceiver(base64Encode(reclaimInfoBytes.slice(208, 320)));
-    setProof(base64Encode(reclaimInfoBytes.slice(320, 512)));
-    setReclaimInfo(reclaimInfoBytes);
-  };
+  let selectedAsset1 = useRef(null);
+  let selectedAsset2 = useRef(null);
 
-  const hideReclaimInfo = () => {
-    setReclaimInfo(null);
-    setAssetID(null);
-    setReclaimAmount(null);
-    setSender1(null);
-    setSender2(null);
-    setReceiver(null);
-    setProof(null);
-  };
-
-  const validateFileUpload = fileText => {
-    try {
-      base64Validate(fileText);
-    } catch (error) {
-      fileUploadRef.current.value = null;
-      setUploadErrorText('File is not valid base64');
-      return false;
-    }
-    const bytes = base64Decode(fileText);
-    if (bytes.length !== EXPECTED_PAYLOAD_SIZE_IN_BYTES) {
-      fileUploadRef.current.value = null;
-      setUploadErrorText(`File is ${bytes.length} bytes, expected ${EXPECTED_PAYLOAD_SIZE_IN_BYTES}`);
-      return false;
-    }
-    return true;
-  };
-
-  const handleFileUpload = () => {
-    setUploadErrorText('');
-    hideReclaimInfo();
-    const file = fileUploadRef.current.files[0];
-    if (!file) {
-      return;
-    }
-    const reader = new FileReader();
-    reader.readAsText(file);
-    reader.onload = async (readerEvent) => {
-      const text = (readerEvent.target.result.trim());
-      if (validateFileUpload(text)) {
-        displayReclaimInfo(base64Decode(text));
+  useEffect(() => {
+    const request = new XMLHttpRequest();
+    request.open('GET', 'reclaim_pk.bin', true);
+    request.responseType = 'blob';
+    request.onreadystatechange = async () => {
+      if (request.readyState === 4) {
+        const fileContent = request.response;
+        const fileContentBuffer = await fileContent.arrayBuffer();
+        const reclaimPK = new Uint8Array(fileContentBuffer);
+        setReclaimPK(reclaimPK);
       }
     };
+    request.send(null);
+  }, []);
+
+  const getLedgerState = async asset => {
+    const shardIndex = new MantaAsset(asset).utxo[0];
+    const shards = await api.query.mantaPay.coinShards();
+    return shards.shard[shardIndex].list;
   };
-  console.log('assetID', assetID);
+
+  const generateReclaimPayload = async () => {
+    const spendableAssets = loadSpendableAssetsById(assetId);
+    const selectedAsset1 = spendableAssets[0];
+    const selectedAsset2 = spendableAssets[1];
+    let ledgerState1 = await getLedgerState(selectedAsset1);
+    let ledgerState2 = await getLedgerState(selectedAsset2);
+    // flatten (wasm only accepts flat arrays)
+    ledgerState1 = Uint8Array.from(ledgerState1.reduce((a, b) => [...a, ...b], []));
+    ledgerState2 = Uint8Array.from(ledgerState2.reduce((a, b) => [...a, ...b], []));
+    return wasm.generate_reclaim_payload_for_browser(
+      selectedAsset1,
+      selectedAsset2,
+      ledgerState1,
+      ledgerState2,
+      amount,
+      reclaimPK,
+      base64Decode(address.trim())
+    );
+  };
+
+  const onReclaimSuccess = () => {
+    const spendableAssets = loadSpendableAssets()
+      .filter(asset => !_.isEqual(asset, selectedAsset1) && !_.isEqual(asset, selectedAsset2));
+    persistSpendableAssets(spendableAssets);
+    selectedAsset1 = null;
+    selectedAsset2 = null;
+  };
+
+  const onReclaimFailure = () => {
+    selectedAsset1 = null;
+    selectedAsset2 = null;
+  };
+
+  const formDisabled = status && status.isProcessing();
+
+  const buttonDisabled = (
+    (status && status.isProcessing()) || !assetId || !address || !amount
+  );
 
   return (
     <>
@@ -81,53 +85,54 @@ export default function Main ({ accountPair }) {
       <Grid.Column width={12}>
         <Header textAlign='center'>Reclaim Private Asset</Header>
         <Form>
-          <Label basic color='teal'>
-            Upload a reclaim file (512 bytes)
-          </Label>
-          <Form.Field inline='true' style={{ textAlign: 'center' }}>
-            <input
-              accept='.txt'
-              id='file'
-              type='file'
-              onChange={handleFileUpload}
-              ref={fileUploadRef}
-              style={{ paddingLeft: '9em', paddingTop: '1em', border: '0px' }}
-            />
-            <Message
-              error
-              onDismiss={() => setUploadErrorText('')}
-              header='Upload failed'
-              content={uploadErrorText}
-              visible={uploadErrorText.length}
+        <Form.Field style={{ width: '500px', marginLeft: '2em' }}>
+          <Input
+              fluid
+              disabled={formDisabled}
+              label='Asset Id'
+              type='number'
+              state='assetId'
+              onChange={onChange}
             />
           </Form.Field>
-          {
-            reclaimInfo
-              ? <Form.Field style={{ maxWidth: '40%', textAlign: 'left', paddingLeft: '19em' }}>
-                <p><b>Asset ID:</b>{'\n'}{assetID.toString(10)}</p>
-                <p><b>Reclaim amount:</b>{'\n'}{reclaimAmount.toString(10)}</p>
-                <p><b>Sender1:</b>{formatBase64StringForDisplay(sender1)}</p>
-                <p><b>Sender2:</b>{formatBase64StringForDisplay(sender2)}</p>
-                <p><b>Receiver:</b>{formatBase64StringForDisplay(receiver)}</p>
-                <p><b>Proof:</b>{formatBase64StringForDisplay(proof)}</p>
-              </Form.Field>
-              : <div/>
-          }
+          <Form.Field style={{ width: '500px', marginLeft: '2em' }}>
+            <Input
+              fluid
+              disabled={formDisabled}
+              label='Address'
+              type='string'
+              state='address'
+              onChange={onChange}
+            />
+          </Form.Field>
+          <Form.Field style={{ width: '500px', marginLeft: '2em' }}>
+            <Input
+              fluid
+              disabled={true}
+              label='Amount'
+              type='number'
+              state='amount'
+              value={1}
+            />
+          </Form.Field>
           <Form.Field style={{ textAlign: 'center' }}>
             <TxButton
               accountPair={accountPair}
               label='Submit'
               type='SIGNED-TX'
               setStatus={setStatus}
+              disabled={buttonDisabled}
               attrs={{
                 palletRpc: 'mantaPay',
                 callable: 'reclaim',
-                inputParams: [reclaimInfo],
-                paramFields: [true]
+                inputParams: generateReclaimPayload,
+                paramFields: [true],
+                onSuccess: onReclaimSuccess,
+                onFailure: onReclaimFailure
               }}
             />
           </Form.Field>
-          <div style={{ overflowWrap: 'break-word' }}>{status}</div>
+          <div style={{ overflowWrap: 'break-word' }}>{status && status.toString()}</div>
         </Form>
       </Grid.Column>
       <Grid.Column width={2}/>

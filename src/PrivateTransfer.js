@@ -1,74 +1,98 @@
-import React, { useState, useRef } from 'react';
-import { Form, Grid, Header, Message, Label } from 'semantic-ui-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Form, Grid, Header, Input } from 'semantic-ui-react';
 import { TxButton } from './substrate-lib/components';
-import { base64Decode, base64Validate, base64Encode } from '@polkadot/util-crypto';
-import { formatBase64StringForDisplay } from './utils/FormatBase64StringForDisplay';
+import { useSubstrate } from './substrate-lib';
+import { base64Decode } from '@polkadot/util-crypto';
+import MantaAsset from './dtos/MantaAsset';
+import _ from 'lodash';
+import { loadSpendableAssetsById, loadSpendableAssets, persistSpendableAssets } from './utils/Persistence';
 
-export default function Main ({ accountPair }) {
-  const EXPECTED_PAYLOAD_SIZE_IN_BYTES = 608;
+export default function Main ({ accountPair, wasm }) {
+  // now
+  // todo: automatically generate proving keys on startup
+  // todo: fix memory leak / pages shouldn't reset on switching labs page
+  // todo: use manta asset type everywhere
+  // todo: ledger state dto
+  
+  // later
+  // todo: generate new private keys and save in local storage / remove hardcoded keys
+  // todo: poll assets we have received
+  // todo: check that coins actually exist on startup (maybe they were spent on different computer)
+  // todo: store pending spends
+  // todo: cleanup folder structure
+  // todo: address derivation / change
+  // todo: make amount configurable / coin selection
 
-  const [transferInfo, setTransferInfo] = useState(null);
-  const [sender1, setSender1] = useState('');
-  const [sender2, setSender2] = useState('');
-  const [receiver1, setReceiver1] = useState('');
-  const [receiver2, setReceiver2] = useState('');
-  const [proof, setProof] = useState('');
+  const { api } = useSubstrate();
   const [status, setStatus] = useState(null);
+  const [transferPK, setTransferPK] = useState(null);
+  const [formState, setFormState] = useState({ address1: '', address2: '', amount: 0, assetId: null });
+  const onChange = (_, data) => setFormState(prev => ({ ...prev, [data.state]: data.value }));
+  const { address1, address2, assetId } = formState;
 
-  const fileUploadRef = useRef();
-  const [uploadErrorText, setUploadErrorText] = useState('');
+  let selectedAsset1 = useRef(null);
+  let selectedAsset2 = useRef(null);
 
-  const displayTransferInfo = transferInfoBytes => {
-    setTransferInfo(transferInfoBytes);
-    setSender1(base64Encode(transferInfoBytes.slice(0, 96)));
-    setSender2(base64Encode(transferInfoBytes.slice(96, 192)));
-    setReceiver1(base64Encode(transferInfoBytes.slice(192, 304)));
-    setReceiver2(base64Encode(transferInfoBytes.slice(304, 416)));
-    setProof(base64Encode(transferInfoBytes.slice(416, 608)));
-  };
-
-  const hideTransferInfo = transferInfoBytes => {
-    setTransferInfo(null);
-    setSender1(null);
-    setSender2(null);
-    setReceiver1(null);
-    setReceiver2(null);
-    setProof(null);
-  };
-
-  const validateFileUpload = fileText => {
-    try {
-      base64Validate(fileText.trim());
-    } catch (error) {
-      fileUploadRef.current.value = null;
-      setUploadErrorText('File is not valid base64');
-      return false;
-    }
-    const bytes = base64Decode(fileText.trim());
-    if (bytes.length !== EXPECTED_PAYLOAD_SIZE_IN_BYTES) {
-      fileUploadRef.current.value = null;
-      setUploadErrorText(`File is ${bytes.length} bytes, expected 608`);
-      return false;
-    }
-    return true;
-  };
-
-  const handleFileUpload = () => {
-    setUploadErrorText('');
-    hideTransferInfo();
-    const file = fileUploadRef.current.files[0];
-    if (!file) {
-      return;
-    }
-    const reader = new FileReader();
-    reader.readAsText(file);
-    reader.onload = async (readerEvent) => {
-      const text = (readerEvent.target.result);
-      if (validateFileUpload(text)) {
-        displayTransferInfo(base64Decode(text));
+  useEffect(() => {
+    const request = new XMLHttpRequest();
+    request.open('GET', 'transfer_pk.bin', true);
+    request.responseType = 'blob';
+    request.onreadystatechange = async () => {
+      if (request.readyState === 4) {
+        const fileContent = request.response;
+        const fileContentBuffer = await fileContent.arrayBuffer();
+        const transferPK = new Uint8Array(fileContentBuffer);
+        setTransferPK(transferPK);
       }
     };
+    request.send(null);
+  }, []);
+
+  const getLedgerState = async asset => {
+    const shardIndex = new MantaAsset(asset).utxo[0];
+    const shards = await api.query.mantaPay.coinShards();
+    return shards.shard[shardIndex].list;
   };
+
+  const generatePrivateTransferPayload = async () => {
+    const spendableAssets = loadSpendableAssetsById(assetId);
+    selectedAsset1 = spendableAssets[0];
+    selectedAsset2 = spendableAssets[1];
+    let ledgerState1 = await getLedgerState(selectedAsset1);
+    let ledgerState2 = await getLedgerState(selectedAsset2);
+    // flatten (wasm only accepts flat arrays)
+    ledgerState1 = Uint8Array.from(ledgerState1.reduce((a, b) => [...a, ...b], []));
+    ledgerState2 = Uint8Array.from(ledgerState2.reduce((a, b) => [...a, ...b], []));
+    return wasm.generate_private_transfer_payload_for_browser(
+      selectedAsset1,
+      selectedAsset2,
+      ledgerState1,
+      ledgerState2,
+      transferPK,
+      base64Decode(address1.trim()),
+      base64Decode(address2.trim())
+    );
+  };
+
+  const onPrivateTransferSuccess = () => {
+    const spendableAssets = loadSpendableAssets()
+      .filter(asset => !_.isEqual(asset, selectedAsset1) && !_.isEqual(asset, selectedAsset2));
+    persistSpendableAssets(spendableAssets);
+
+    selectedAsset1 = null;
+    selectedAsset2 = null;
+  };
+
+  const onPrivateTransferFailure = () => {
+    selectedAsset1 = null;
+    selectedAsset2 = null;
+  };
+
+  const formDisabled = status && status.isProcessing();
+
+  const buttonDisabled = (
+    (status && status.isProcessing()) || !address1 || !address2 || !assetId
+  );
 
   return (
     <>
@@ -76,50 +100,74 @@ export default function Main ({ accountPair }) {
       <Grid.Column width={12} textAlign='center'>
         <Header textAlign='center'>Private Transfer</Header>
         <Form>
-          <Label basic color='teal'>
-            Upload a private transfer file (608 bytes)
-          </Label>
-          <Form.Field inline='true' style={{ textAlign: 'center' }}>
-            <input
-              accept='.txt'
-              id='file'
-              type='file'
-              onChange={handleFileUpload}
-              ref={fileUploadRef}
-              style={{ paddingLeft: '9em', paddingTop: '1em', border: '0px' }}
-            />
-            <Message
-              error
-              onDismiss={() => setUploadErrorText('')}
-              header='Upload failed'
-              content={uploadErrorText}
-              visible={uploadErrorText.length}
+          <Form.Field style={{ width: '500px', marginLeft: '2em' }}>
+            <Input
+              fluid
+              disabled={formDisabled}
+              label='Asset ID'
+              type='number'
+              state='assetId'
+              onChange={onChange}
             />
           </Form.Field>
-          {transferInfo &&
-            <Form.Field style={{ maxWidth: '40%', textAlign: 'left', paddingLeft: '19em' }}>
-              <p><b>Sender1:</b>{formatBase64StringForDisplay(sender1)}</p>
-              <p><b>Sender2:</b>{formatBase64StringForDisplay(sender2)}</p>
-              <p><b>Receiver1:</b>{formatBase64StringForDisplay(receiver1)}</p>
-              <p><b>Receiver2:</b>{formatBase64StringForDisplay(receiver2)}</p>
-              <p><b>Proof:</b>{formatBase64StringForDisplay(proof)}</p>
-            </Form.Field>
-          }
+          <Form.Field style={{ width: '500px', marginLeft: '2em' }}>
+            <Input
+              fluid
+              disabled={formDisabled}
+              label='Address 1'
+              type='string'
+              state='address1'
+              onChange={onChange}
+            />
+          </Form.Field>
+          <Form.Field style={{ width: '500px', marginLeft: '2em' }}>
+            <Input
+              fluid
+              disabled={formDisabled}
+              label='Address 2'
+              type='string'
+              state='address2'
+              onChange={onChange}
+            />
+          </Form.Field>
+          <Form.Field style={{ width: '500px', marginLeft: '2em' }}>
+            <Input
+              fluid
+              disabled={true}
+              label='Amount 1'
+              type='number'
+              state='amount1'
+              value={1}
+            />
+          </Form.Field>
+          <Form.Field style={{ width: '500px', marginLeft: '2em' }}>
+            <Input
+              fluid
+              disabled={true}
+              label='Amount 2'
+              type='number'
+              state='amount2'
+              value={1}
+            />
+          </Form.Field>
           <Form.Field style={{ textAlign: 'center' }}>
             <TxButton
               accountPair={accountPair}
               label='Submit'
               type='SIGNED-TX'
               setStatus={setStatus}
+              disabled={buttonDisabled}
               attrs={{
                 palletRpc: 'mantaPay',
                 callable: 'privateTransfer',
-                inputParams: [transferInfo],
-                paramFields: [true]
+                inputParams: generatePrivateTransferPayload,
+                paramFields: [true],
+                onSuccess: onPrivateTransferSuccess,
+                onFailure: onPrivateTransferFailure
               }}
             />
           </Form.Field>
-          <div style={{ overflowWrap: 'break-word' }}>{status}</div>
+          <div style={{ overflowWrap: 'break-word' }}>{status && status.toString()}</div>
         </Form>
       </Grid.Column>
       <Grid.Column width={2}/>

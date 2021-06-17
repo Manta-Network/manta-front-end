@@ -1,13 +1,14 @@
-export const formatBase64StringForDisplay = base64String => {
+const DEFAULT_LINE_LENGTH = 75;
+
+export const formatBase64StringForDisplay = (base64String, lineLength = DEFAULT_LINE_LENGTH) => {
   if (!base64String) {
     return '';
   }
-  const LINE_LENGTH = 75;
   let formattedString = '\n';
   for (let i = 0; i < base64String.length; i++) {
-    formattedString += base64String.slice(i, i + LINE_LENGTH);
+    formattedString += base64String.slice(i, i + lineLength);
     formattedString += '\n';
-    i += LINE_LENGTH;
+    i += lineLength;
   }
   return formattedString;
 };

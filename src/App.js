@@ -1,4 +1,4 @@
-import React, { useState, createRef } from 'react';
+import React, { useState, createRef, useEffect } from 'react';
 import { BrowserRouter as Router } from 'react-router-dom';
 import { Container, Dimmer, Loader, Grid, Message } from 'semantic-ui-react';
 import 'semantic-ui-css/semantic.min.css';
@@ -8,14 +8,43 @@ import { DeveloperConsole } from './substrate-lib/components';
 
 import Navbar from './Navbar';
 import Routes from './Routes';
+import store from 'store';
 
 function Main () {
+
   const [accountAddress, setAccountAddress] = useState(null);
-  const { apiState, keyring, keyringState, apiError } = useSubstrate();
+  const [wasm, setWasm] = useState(null);
+  const { api, apiState, keyring, keyringState, apiError } = useSubstrate();
+  
+  // Reset utxo cache if using fresh dev node
+  useEffect(() => {
+    const clearUtxoCache = async () => {
+      if (!api) {
+        return;
+      }
+      const oldBlockNumber = store.get('block num') || 0;
+      const currentBlock = await api.rpc.chain.getBlock();
+      const currentBlockNumber = currentBlock.block.header.number.toNumber()
+      store.set("block num", currentBlockNumber)
+      if (currentBlockNumber < oldBlockNumber) {
+        store.set('manta_spendable_assets', [])
+      }
+      clearUtxoCache()
+    }
+  }, [api])
+
   const accountPair =
     accountAddress &&
     keyringState === 'READY' &&
     keyring.getPair(accountAddress);
+
+  useEffect(() => {
+    async function loadWasm () {
+      const wasm = await import('manta-api');
+      setWasm(wasm);
+    }
+    loadWasm();
+  }, []);
 
   const loader = text =>
     <Dimmer active>
@@ -47,7 +76,7 @@ function Main () {
             <Navbar setAccountAddress={setAccountAddress} />
             <Container style={{ paddingTop: '3em' }}>
             <Grid centered>
-            <Routes accountPair={accountPair} />
+            <Routes accountPair={accountPair} wasm={wasm} />
             </Grid>
             </Container>
             <DeveloperConsole />

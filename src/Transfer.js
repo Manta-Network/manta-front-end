@@ -49,7 +49,7 @@ export default function Main (props) {
             }}
           />
         </Form.Field>
-        <div style={{ overflowWrap: 'break-word' }}>{status}</div>
+        <div style={{ overflowWrap: 'break-word' }}>{status && status.toString()}</div>
       </Form>
     </Grid.Column>
   );
